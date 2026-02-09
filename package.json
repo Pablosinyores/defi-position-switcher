@@ -1,0 +1,31 @@
+{
+  "name": "defi-borrowing-app",
+  "version": "1.0.0",
+  "description": "DeFi Borrowing PoC with gasless transactions and protocol switching",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend",
+    "contracts"
+  ],
+  "scripts": {
+    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install && cd ../contracts && npm install",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "test:contracts": "cd contracts && npm test",
+    "deploy:contracts": "cd contracts && npm run deploy:sepolia"
+  },
+  "keywords": [
+    "defi",
+    "lending",
+    "borrowing",
+    "account-abstraction",
+    "gasless"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
