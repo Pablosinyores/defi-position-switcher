@@ -1,0 +1,58 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Environment files (NEVER commit secrets!)
+.env
+.env.local
+.env.*.local
+*.env
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-*
+
+# Backend
+backend/coverage/
+backend/node_modules/
+
+# Frontend
+frontend/dist/
+frontend/node_modules/
+
+# Contracts - Foundry
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+
+# Contracts - Hardhat (legacy)
+contracts/artifacts/
+contracts/typechain/
+contracts/typechain-types/
+contracts/coverage/
+contracts/coverage.json
+
+# Foundry libs (large, fetched via forge install)
+contracts/lib/
+
+# Backup directories
+backup-*/
+
+# Claude Code memory (personal notes)
+.claude/
+
+# Test output
+*.tmp
+*.bak
