@@ -1,0 +1,81 @@
+.transaction-history-card {
+  max-width: 800px;
+}
+
+.empty-state {
+  text-align: center;
+  color: #9ca3af;
+  padding: 48px 0;
+}
+
+.transactions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.transaction-item {
+  border: 2px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 16px;
+  transition: all 0.2s;
+}
+
+.transaction-item:hover {
+  border-color: #676FFF;
+  transform: translateX(4px);
+}
+
+.tx-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.tx-type {
+  font-weight: 600;
+  color: #111827;
+  text-transform: capitalize;
+}
+
+.tx-status {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: #f3f4f6;
+}
+
+.tx-details {
+  font-size: 14px;
+  color: #6b7280;
+  margin-bottom: 12px;
+}
+
+.tx-details div {
+  margin: 4px 0;
+}
+
+.tx-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  padding-top: 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.tx-hash {
+  color: #676FFF;
+  text-decoration: none;
+  font-family: monospace;
+}
+
+.tx-hash:hover {
+  text-decoration: underline;
+}
+
+.tx-date {
+  color: #9ca3af;
+}
