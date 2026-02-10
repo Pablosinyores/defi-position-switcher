@@ -6,8 +6,10 @@ typechain
 typechain-types
 
 # Hardhat files
-cache
-artifacts
+cache/
+artifacts/
+out/
+broadcast/
 
 # Deployment files (optional: uncomment if you don't want to commit)
 # deployments/
