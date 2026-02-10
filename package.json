@@ -5,16 +5,15 @@
   "private": true,
   "workspaces": [
     "backend",
-    "frontend",
-    "contracts"
+    "frontend"
   ],
   "scripts": {
-    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install && cd ../contracts && npm install",
+    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install",
     "dev:backend": "cd backend && npm run dev",
     "dev:frontend": "cd frontend && npm run dev",
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
-    "test:contracts": "cd contracts && npm test",
-    "deploy:contracts": "cd contracts && npm run deploy:sepolia"
+    "test:contracts": "cd contracts && forge test -vvv",
+    "build:contracts": "cd contracts && forge build"
   },
   "keywords": [
     "defi",
