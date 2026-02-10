@@ -68,9 +68,13 @@ export const authAPI = {
   getProfile: () =>
     api.get('/auth/profile'),
 
-  // Setup session key for backend signing
-  setupSessionKey: () =>
-    api.post('/auth/session-key'),
+  // Get session key registration data (returns UserOp hash for user to sign)
+  getSessionKeyRegistrationData: () =>
+    api.get('/auth/session-key/registration-data'),
+
+  // Confirm session key registration with user's signature
+  confirmSessionKeyRegistration: (signature, userOpHash) =>
+    api.post('/auth/session-key/confirm', { signature, userOpHash }),
 
   // Get session key status
   getSessionKeyStatus: () =>
@@ -79,10 +83,6 @@ export const authAPI = {
 
 // Smart Account API (ERC-4337)
 export const accountAPI = {
-  // Activate smart account (deploy if needed)
-  activate: () =>
-    api.post('/account/activate'),
-
   // Get smart account address and status
   getStatus: () =>
     api.get('/account/status'),
@@ -95,21 +95,10 @@ export const accountAPI = {
   getPositions: () =>
     api.get('/account/positions'),
 
-  // Fund EOA with test tokens (Tenderly only)
-  fundEOA: (tokens) =>
-    api.post('/account/fund', { tokens }),
-
-  // Get EOA balances
-  getEOABalances: () =>
-    api.get('/account/eoa-balances'),
-
-  // Approve smart account to spend EOA tokens
-  approveSmartAccount: (tokens) =>
-    api.post('/account/approve', { tokens }),
-
-  // Pull tokens from EOA to Smart Account via session key (gasless!)
-  pullFromEOA: (token, amount) =>
-    api.post('/account/pull', { token, amount })
+  // Fund Smart Account with test tokens (Tenderly only)
+  // Tokens go directly to smart account - no approval needed!
+  fundSmartAccount: (tokens) =>
+    api.post('/account/fund', { tokens })
 }
 
 // DeFi Operations API

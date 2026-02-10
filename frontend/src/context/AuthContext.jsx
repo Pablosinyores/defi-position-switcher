@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react'
-import { usePrivy } from '@privy-io/react-auth'
+import { usePrivy, useWallets } from '@privy-io/react-auth'
 import { authAPI, accountAPI, setTokenGetter, setAuthToken } from '../services/api'
 import { toast } from 'react-toastify'
 
@@ -14,6 +14,9 @@ export function AuthProvider({ children }) {
     logout: privyLogout,
     getAccessToken
   } = usePrivy()
+
+  // Get access to Privy wallets for signing
+  const { wallets } = useWallets()
 
   const [backendUser, setBackendUser] = useState(null)
   const [smartAccount, setSmartAccount] = useState(null)
@@ -160,29 +163,113 @@ export function AuthProvider({ children }) {
     }
   }, [ready, authenticated, syncWithBackend])
 
-  // Activate smart account (deploy + install session key)
+  // Get the embedded Privy wallet for signing
+  const getEmbeddedWallet = useCallback(() => {
+    if (!wallets || wallets.length === 0) return null
+    // Find the embedded Privy wallet (not external wallets)
+    return wallets.find(w => w.walletClientType === 'privy') || wallets[0]
+  }, [wallets])
+
+  /**
+   * Activate smart account by registering session key
+   *
+   * Flow:
+   * 1. Get registration data (unsigned UserOp) from backend
+   * 2. User signs the UserOp hash with their Privy wallet
+   * 3. Submit signature to backend to complete registration
+   *
+   * This deploys the smart account (if needed) and installs the session key plugin
+   */
   const activateAccount = async () => {
     try {
       setLoading(true)
-      toast.info('Activating smart account...')
 
-      const response = await accountAPI.activate()
-      if (response.data.success) {
-        setSmartAccount(response.data.data)
-
-        // Update backend user with session key status
-        setBackendUser(prev => ({
-          ...prev,
-          hasSessionKey: true,
-          sessionKeyExpiry: response.data.data.expiresAt
-        }))
-
-        toast.success('Smart account activated!')
-        return response.data.data
+      // Step 1: Get the embedded wallet
+      const wallet = getEmbeddedWallet()
+      if (!wallet) {
+        throw new Error('No wallet available. Please wait for wallet to initialize.')
       }
+
+      console.log('[AuthContext] Using wallet for signing:', wallet.address)
+
+      // Step 2: Get registration data from backend
+      toast.info('Preparing session key registration...')
+      const regResponse = await authAPI.getSessionKeyRegistrationData()
+
+      if (!regResponse.data.success) {
+        throw new Error(regResponse.data.error || 'Failed to get registration data')
+      }
+
+      const { userOpHash, alreadyRegistered, sessionKeyAddress } = regResponse.data.data
+
+      // Check if already registered
+      if (alreadyRegistered) {
+        toast.success('Session key already registered!')
+        // Refresh smart account status
+        const statusRes = await accountAPI.getStatus()
+        if (statusRes.data.success) {
+          setSmartAccount(statusRes.data.data)
+          setBackendUser(prev => ({
+            ...prev,
+            hasSessionKey: true
+          }))
+        }
+        return statusRes.data.data
+      }
+
+      console.log('[AuthContext] Got UserOp hash to sign:', userOpHash)
+      console.log('[AuthContext] Session key address:', sessionKeyAddress)
+
+      // Step 3: Sign the UserOp hash with user's Privy wallet
+      toast.info('Please sign to authorize session key...')
+
+      // Get the wallet provider for signing
+      const provider = await wallet.getEthereumProvider()
+
+      // Sign the hash using personal_sign (EIP-191)
+      // The hash is already computed by the backend
+      const signature = await provider.request({
+        method: 'personal_sign',
+        params: [userOpHash, wallet.address]
+      })
+
+      console.log('[AuthContext] Got signature:', signature)
+
+      // Step 4: Submit signature to backend
+      toast.info('Registering session key on-chain...')
+      const confirmResponse = await authAPI.confirmSessionKeyRegistration(signature, userOpHash)
+
+      if (!confirmResponse.data.success) {
+        throw new Error(confirmResponse.data.data?.message || 'Failed to register session key')
+      }
+
+      console.log('[AuthContext] Session key registered! Tx:', confirmResponse.data.data.txHash)
+
+      // Update state
+      setBackendUser(prev => ({
+        ...prev,
+        hasSessionKey: true,
+        sessionKeyAddress: confirmResponse.data.data.sessionKeyAddress,
+        sessionKeyExpiry: confirmResponse.data.data.expiresAt
+      }))
+
+      // Refresh smart account status
+      const statusRes = await accountAPI.getStatus()
+      if (statusRes.data.success) {
+        setSmartAccount(statusRes.data.data)
+      }
+
+      toast.success('Smart account activated! Session key registered.')
+      return confirmResponse.data.data
     } catch (error) {
       console.error('[AuthContext] Activate account error:', error)
-      toast.error(error.response?.data?.error || 'Failed to activate smart account')
+
+      // Handle user rejection
+      if (error.code === 4001 || error.message?.includes('rejected')) {
+        toast.error('Signature rejected. Please try again.')
+      } else {
+        toast.error(error.response?.data?.error || error.message || 'Failed to activate smart account')
+      }
       throw error
     } finally {
       setLoading(false)
