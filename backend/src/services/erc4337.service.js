@@ -31,16 +31,21 @@ const mainnetFork = {
   }
 }
 
-// Contract Addresses
+// ERC-4337 Infrastructure (constant mainnet addresses)
 const ENTRYPOINT_V06 = '0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789'
 const SESSION_KEY_PLUGIN = '0x0000003E0000a96de4058e1E02a62FaaeCf23d8d'
 const MULTI_OWNER_PLUGIN = '0xcE0000007B008F50d762D155002600004cD6c647'
 
+// Deployment-specific addresses (from env or setup script)
 const PAYMASTER_V06 = config.contracts?.paymasterV06 || process.env.PAYMASTER_V06_ADDRESS
 const SWITCHER = config.contracts?.switcher || process.env.SWITCHER_ADDRESS
-const USDC_COMET = process.env.USDC_COMET_ADDRESS
-const WETH_COMET = process.env.WETH_COMET_ADDRESS
-const WBTC = process.env.WBTC_ADDRESS
+
+// DeFi Addresses (constant mainnet addresses)
+const USDC_COMET = '0xc3d688B66703497DAA19211EEdff47f25384cdc3'
+const WETH_COMET = '0xA17581A9E3356d9A858b789D68B4d866e593aE94'
+const WBTC = '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599'
+const USDC = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'
+const WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'
 
 // ABIs
 const ENTRYPOINT_V06_ABI = [
@@ -78,9 +83,9 @@ const SWITCHER_ABI = [
 
 // Token config for funding
 const TOKENS = {
-  WBTC: { address: process.env.WBTC_ADDRESS, decimals: 8, defaultAmount: '1' }, // 1 WBTC
-  USDC: { address: process.env.USDC_ADDRESS, decimals: 6, defaultAmount: '10000' }, // 10,000 USDC
-  WETH: { address: process.env.WETH_ADDRESS, decimals: 18, defaultAmount: '5' }, // 5 WETH
+  WBTC: { address: WBTC, decimals: 8, defaultAmount: '1' }, // 1 WBTC
+  USDC: { address: USDC, decimals: 6, defaultAmount: '10000' }, // 10,000 USDC
+  WETH: { address: WETH, decimals: 18, defaultAmount: '5' }, // 5 WETH
 }
 
 const EXECUTE_WITH_SESSION_KEY_ABI = [
@@ -124,39 +129,223 @@ class ERC4337Service {
     this.entryPoint = new ethers.Contract(ENTRYPOINT_V06, ENTRYPOINT_V06_ABI, this.provider)
     this.sessionKeyPlugin = new ethers.Contract(SESSION_KEY_PLUGIN, SESSION_KEY_PLUGIN_ABI, this.provider)
 
-    // Backend session key (from env)
-    this.backendSessionKey = privateKeyToAccount(process.env.SESSION_KEY_PRIVATE_KEY)
-
-    // Executor wallet for submitting UserOps
-    this.executorWallet = new ethers.Wallet(process.env.DEPLOYER_PRIVATE_KEY, this.provider)
+    // Executor wallet for submitting UserOps to EntryPoint
+    // This is NOT an owner - just pays for on-chain tx gas
+    if (process.env.DEPLOYER_PRIVATE_KEY) {
+      this.executorWallet = new ethers.Wallet(process.env.DEPLOYER_PRIVATE_KEY, this.provider)
+    }
   }
 
   /**
-   * Create a new MultiOwnerModularAccount for a user
-   * The user's Privy wallet will be the owner
+   * Compute the counterfactual smart account address for an owner
+   * The owner (Privy EOA) will control this account - backend has NO owner access
    */
-  async createSmartAccount(ownerPrivateKey) {
+  async computeSmartAccountAddress(ownerAddress) {
     try {
-      const owner = privateKeyToAccount(ownerPrivateKey)
-      const ownerSigner = new LocalAccountSigner(owner)
+      // We need a signer to compute the address, but ownership is determined by the owners array
+      // Use a dummy signer - the actual owner is ownerAddress (user's Privy EOA)
+      const dummyKey = '0x0000000000000000000000000000000000000000000000000000000000000001'
+      const dummySigner = new LocalAccountSigner(privateKeyToAccount(dummyKey))
 
       const account = await createMultiOwnerModularAccount({
         transport: http(config.blockchain.rpcUrl),
         chain: mainnetFork,
-        signer: ownerSigner,
-        owners: [owner.address],
+        signer: dummySigner,
+        owners: [ownerAddress],  // User's Privy EOA is the ONLY owner
       })
 
-      logger.info(`Smart account created: ${account.address}`)
+      logger.info(`Computed smart account address for owner ${ownerAddress}: ${account.address}`)
 
       return {
         address: account.address,
-        ownerAddress: owner.address,
-        account
+        ownerAddress
       }
     } catch (error) {
-      logger.error('Error creating smart account:', error)
+      logger.error('Error computing smart account address:', error)
       throw error
+    }
+  }
+
+  /**
+   * Build unsigned UserOp for session key registration
+   * User must sign this with their Privy wallet (the owner)
+   */
+  async buildSessionKeyRegistrationUserOp(accountAddress, ownerAddress, sessionKeyAddress, expiresAt) {
+    // Check if account is deployed
+    const isDeployed = await this.isAccountDeployed(accountAddress)
+
+    // Build DeFi permissions for the session key
+    const permissions = new SessionKeyPermissionsBuilder()
+      .setContractAccessControlType(SessionKeyAccessListType.ALLOWLIST)
+      .addContractAddressAccessEntry({ contractAddress: SWITCHER, isOnList: true, checkSelectors: false })
+      .addContractAddressAccessEntry({ contractAddress: USDC_COMET, isOnList: true, checkSelectors: false })
+      .addContractAddressAccessEntry({ contractAddress: WETH_COMET, isOnList: true, checkSelectors: false })
+      .addContractAddressAccessEntry({ contractAddress: WBTC, isOnList: true, checkSelectors: false })
+      .addContractAddressAccessEntry({ contractAddress: USDC, isOnList: true, checkSelectors: false })
+      .addContractAddressAccessEntry({ contractAddress: WETH, isOnList: true, checkSelectors: false })
+      .setTimeRange({
+        validFrom: Math.floor(Date.now() / 1000) - 60,
+        validUntil: Math.floor(new Date(expiresAt).getTime() / 1000)
+      })
+      .encode()
+
+    const sessionKeyTag = keccak256(toHex(`session-key-${sessionKeyAddress}`))
+
+    // Build plugin install data
+    const pluginInstallData = encodeAbiParameters(
+      [{ type: 'address[]' }, { type: 'bytes32[]' }, { type: 'bytes[][]' }],
+      [[sessionKeyAddress], [sessionKeyTag], [permissions]]
+    )
+
+    // Get manifest hash
+    const rawManifestData = await this.provider.call({
+      to: SESSION_KEY_PLUGIN,
+      data: '0xc7763130' // pluginManifest()
+    })
+    const manifestHash = ethers.keccak256(rawManifestData)
+
+    // Build dependencies
+    const dependency0 = encodePacked(['address', 'uint8'], [MULTI_OWNER_PLUGIN, 0x0])
+    const dependency1 = encodePacked(['address', 'uint8'], [MULTI_OWNER_PLUGIN, 0x1])
+
+    // Build installPlugin calldata
+    const installPluginIface = new ethers.Interface(INSTALL_PLUGIN_ABI)
+    const installPluginCalldata = installPluginIface.encodeFunctionData('installPlugin', [
+      SESSION_KEY_PLUGIN,
+      manifestHash,
+      pluginInstallData,
+      [dependency0, dependency1]
+    ])
+
+    // Get init code if account not deployed
+    let initCode = '0x'
+    if (!isDeployed) {
+      const dummyKey = '0x0000000000000000000000000000000000000000000000000000000000000001'
+      const dummySigner = new LocalAccountSigner(privateKeyToAccount(dummyKey))
+      const account = await createMultiOwnerModularAccount({
+        transport: http(config.blockchain.rpcUrl),
+        chain: mainnetFork,
+        signer: dummySigner,
+        owners: [ownerAddress],
+      })
+      initCode = await account.getInitCode()
+    }
+
+    const nonce = await this.entryPoint.getNonce(accountAddress, 0)
+
+    const userOp = {
+      sender: accountAddress,
+      nonce: nonce.toString(),
+      initCode,
+      callData: installPluginCalldata,
+      callGasLimit: '3000000',
+      verificationGasLimit: isDeployed ? '500000' : '3000000',
+      preVerificationGas: '150000',
+      maxFeePerGas: '2000000000',
+      maxPriorityFeePerGas: '1000000000',
+      paymasterAndData: PAYMASTER_V06,
+    }
+
+    // Compute the hash that needs to be signed
+    const userOpForHash = {
+      ...userOp,
+      nonce: BigInt(userOp.nonce),
+      callGasLimit: BigInt(userOp.callGasLimit),
+      verificationGasLimit: BigInt(userOp.verificationGasLimit),
+      preVerificationGas: BigInt(userOp.preVerificationGas),
+      maxFeePerGas: BigInt(userOp.maxFeePerGas),
+      maxPriorityFeePerGas: BigInt(userOp.maxPriorityFeePerGas),
+    }
+    const userOpHash = computeUserOpHashV06(userOpForHash, ENTRYPOINT_V06, 1n)
+
+    return {
+      userOp,
+      userOpHash,
+      needsDeploy: !isDeployed
+    }
+  }
+
+  /**
+   * Submit a pre-built UserOp with user's signature
+   * @param {Object} userOp - The UserOp object (stored from buildSessionKeyRegistrationUserOp)
+   * @param {string} signature - The user's signature
+   */
+  async submitSignedUserOp(userOp, signature) {
+    // Convert string values to BigInt for ethers
+    const signedUserOp = {
+      sender: userOp.sender,
+      nonce: BigInt(userOp.nonce),
+      initCode: userOp.initCode,
+      callData: userOp.callData,
+      callGasLimit: BigInt(userOp.callGasLimit),
+      verificationGasLimit: BigInt(userOp.verificationGasLimit),
+      preVerificationGas: BigInt(userOp.preVerificationGas),
+      maxFeePerGas: BigInt(userOp.maxFeePerGas),
+      maxPriorityFeePerGas: BigInt(userOp.maxPriorityFeePerGas),
+      paymasterAndData: userOp.paymasterAndData,
+      signature
+    }
+
+    logger.info(`Submitting signed UserOp for account ${userOp.sender}`)
+
+    // Submit to EntryPoint
+    const gas = await this.entryPoint.handleOps.estimateGas([signedUserOp], this.executorWallet.address)
+    const tx = await this.entryPoint.connect(this.executorWallet).handleOps(
+      [signedUserOp],
+      this.executorWallet.address,
+      { gasLimit: gas * 2n }
+    )
+    const receipt = await tx.wait()
+
+    logger.info(`UserOp submitted, tx: ${receipt.hash}`)
+
+    return {
+      success: true,
+      txHash: receipt.hash
+    }
+  }
+
+  /**
+   * Submit signed session key registration UserOp (DEPRECATED - use submitSignedUserOp instead)
+   */
+  async submitSessionKeyRegistration(accountAddress, ownerAddress, sessionKeyAddress, expiresAt, signature) {
+    // Rebuild the UserOp (or we could cache it)
+    const { userOp } = await this.buildSessionKeyRegistrationUserOp(
+      accountAddress,
+      ownerAddress,
+      sessionKeyAddress,
+      expiresAt
+    )
+
+    // Add signature
+    const signedUserOp = {
+      ...userOp,
+      nonce: BigInt(userOp.nonce),
+      callGasLimit: BigInt(userOp.callGasLimit),
+      verificationGasLimit: BigInt(userOp.verificationGasLimit),
+      preVerificationGas: BigInt(userOp.preVerificationGas),
+      maxFeePerGas: BigInt(userOp.maxFeePerGas),
+      maxPriorityFeePerGas: BigInt(userOp.maxPriorityFeePerGas),
+      signature
+    }
+
+    // Submit to EntryPoint
+    const gas = await this.entryPoint.handleOps.estimateGas([signedUserOp], this.executorWallet.address)
+    const tx = await this.entryPoint.connect(this.executorWallet).handleOps(
+      [signedUserOp],
+      this.executorWallet.address,
+      { gasLimit: gas * 2n }
+    )
+    const receipt = await tx.wait()
+
+    // Verify installation
+    const isNowRegistered = await this.sessionKeyPlugin.isSessionKeyOf(accountAddress, sessionKeyAddress)
+
+    logger.info(`Session key registration: ${isNowRegistered ? 'SUCCESS' : 'FAILED'}, tx: ${receipt.hash}`)
+
+    return {
+      success: isNowRegistered,
+      txHash: receipt.hash
     }
   }
 
@@ -252,8 +441,6 @@ class ERC4337Service {
     })
 
     // Build DeFi permissions - allow all DeFi contracts
-    const USDC = process.env.USDC_ADDRESS
-    const WETH = process.env.WETH_ADDRESS
     const permissions = new SessionKeyPermissionsBuilder()
       .setContractAccessControlType(SessionKeyAccessListType.ALLOWLIST)
       .addContractAddressAccessEntry({ contractAddress: SWITCHER, isOnList: true, checkSelectors: false })
@@ -346,16 +533,22 @@ class ERC4337Service {
   /**
    * Check if session key is registered
    */
-  async isSessionKeyRegistered(accountAddress) {
-    return await this.sessionKeyPlugin.isSessionKeyOf(accountAddress, this.backendSessionKey.address)
+  async isSessionKeyRegistered(accountAddress, sessionKeyAddress) {
+    if (!sessionKeyAddress) {
+      logger.warn('No session key address provided')
+      return false
+    }
+    return await this.sessionKeyPlugin.isSessionKeyOf(accountAddress, sessionKeyAddress)
   }
 
   /**
    * Get account status
    */
-  async getAccountStatus(accountAddress) {
+  async getAccountStatus(accountAddress, sessionKeyAddress = null) {
     const deployed = await this.isAccountDeployed(accountAddress)
-    const hasSessionKey = deployed ? await this.isSessionKeyRegistered(accountAddress) : false
+    const hasSessionKey = deployed && sessionKeyAddress
+      ? await this.isSessionKeyRegistered(accountAddress, sessionKeyAddress)
+      : false
 
     // Check switcher authorization
     let switcherAuthorized = false
@@ -372,7 +565,7 @@ class ERC4337Service {
       address: accountAddress,
       deployed,
       hasSessionKey,
-      sessionKeyAddress: this.backendSessionKey.address,
+      sessionKeyAddress,
       switcherAuthorized,
       entryPoint: ENTRYPOINT_V06,
       paymaster: PAYMASTER_V06
@@ -385,8 +578,8 @@ class ERC4337Service {
   async getBalances(accountAddress) {
     const tokens = [
       { address: WBTC, symbol: 'WBTC', decimals: 8 },
-      { address: process.env.USDC_ADDRESS, symbol: 'USDC', decimals: 6 },
-      { address: process.env.WETH_ADDRESS, symbol: 'WETH', decimals: 18 },
+      { address: USDC, symbol: 'USDC', decimals: 6 },
+      { address: WETH, symbol: 'WETH', decimals: 18 },
     ]
 
     const balances = {}
@@ -506,8 +699,16 @@ class ERC4337Service {
 
   /**
    * Execute a transaction using session key
+   * @param {string} accountAddress - Smart account address
+   * @param {Array} calls - Array of {target, value, data} calls
+   * @param {string} sessionKeyPrivate - Per-user session key private key (from encrypted DB storage)
    */
-  async executeWithSessionKey(accountAddress, calls) {
+  async executeWithSessionKey(accountAddress, calls, sessionKeyPrivate) {
+    if (!sessionKeyPrivate) {
+      throw new Error('Session key private key is required')
+    }
+
+    const sessionKey = privateKeyToAccount(sessionKeyPrivate)
     const executeIface = new ethers.Interface(EXECUTE_WITH_SESSION_KEY_ABI)
 
     const sessionCalldata = executeIface.encodeFunctionData('executeWithSessionKey', [
@@ -516,7 +717,7 @@ class ERC4337Service {
         value: BigInt(call.value || 0),
         data: call.data
       })),
-      this.backendSessionKey.address
+      sessionKey.address
     ])
 
     const nonce = await this.entryPoint.getNonce(accountAddress, 0)
@@ -535,7 +736,7 @@ class ERC4337Service {
     }
 
     const opHash = computeUserOpHashV06(userOp, ENTRYPOINT_V06, 1n)
-    userOp.signature = await this.backendSessionKey.signMessage({ message: { raw: ethers.getBytes(opHash) } })
+    userOp.signature = await sessionKey.signMessage({ message: { raw: ethers.getBytes(opHash) } })
 
     const gas = await this.entryPoint.handleOps.estimateGas([userOp], this.executorWallet.address)
     const tx = await this.entryPoint.connect(this.executorWallet).handleOps(
@@ -618,7 +819,7 @@ class ERC4337Service {
   /**
    * Allow Switcher on both Comets via session key
    */
-  async allowSwitcherOnComets(accountAddress) {
+  async allowSwitcherOnComets(accountAddress, sessionKeyPrivate) {
     const cometIface = new ethers.Interface(COMET_ABI)
 
     const calls = [
@@ -635,18 +836,23 @@ class ERC4337Service {
     ]
 
     logger.info(`Allowing Switcher on both Comets for ${accountAddress}`)
-    return await this.executeWithSessionKey(accountAddress, calls)
+    return await this.executeWithSessionKey(accountAddress, calls, sessionKeyPrivate)
   }
 
   /**
    * Execute cross-Comet switch via session key
    * Includes setup steps: authorize on Switcher + allow on Comets
+   * @param {string} sessionKeyPrivate - Per-user session key (from encrypted DB)
    */
-  async executeCrossSwitch(accountAddress, sourceComet, targetComet, collateralAmount, borrowAmount) {
+  async executeCrossSwitch(accountAddress, sourceComet, targetComet, collateralAmount, borrowAmount, sessionKeyPrivate) {
     logger.info(`Executing cross-Comet switch for ${accountAddress}`)
     logger.info(`  Source: ${sourceComet}`)
     logger.info(`  Target: ${targetComet}`)
     logger.info(`  Collateral: ${collateralAmount}`)
+
+    if (!sessionKeyPrivate) {
+      throw new Error('Session key private key is required')
+    }
 
     // Step 1: Check and setup Switcher authorization
     const isAuthorized = await this.isAccountAuthorizedOnSwitcher(accountAddress)
@@ -665,7 +871,7 @@ class ERC4337Service {
 
     if (!usdcAllowed || !wethAllowed) {
       logger.info(`Setting up Comet allowances (USDC: ${usdcAllowed}, WETH: ${wethAllowed})`)
-      const allowResult = await this.allowSwitcherOnComets(accountAddress)
+      const allowResult = await this.allowSwitcherOnComets(accountAddress, sessionKeyPrivate)
       if (!allowResult.success) {
         logger.error('Failed to allow Switcher on Comets')
         return { success: false, error: 'Failed to setup Comet allowances' }
@@ -691,7 +897,7 @@ class ERC4337Service {
       target: SWITCHER,
       value: 0n,
       data: switchCalldata
-    }])
+    }], sessionKeyPrivate)
 
     logger.info(`Switch result: ${result.success ? 'SUCCESS' : 'FAILED'}, tx: ${result.txHash}`)
 

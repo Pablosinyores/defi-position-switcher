@@ -8,8 +8,12 @@ router.post('/login', authController.loginOrRegister);
 
 // Protected routes
 router.use(authenticatePrivy);
-router.post('/session-key', authController.setupSessionKey);
+
+// Session key registration flow (user must sign via Privy)
+router.get('/session-key/registration-data', authController.getSessionKeyRegistrationData);
+router.post('/session-key/confirm', authController.confirmSessionKeyRegistration);
 router.get('/session-key/status', authController.getSessionKeyStatus);
+
 router.get('/profile', authController.getProfile);
 
 module.exports = router;
