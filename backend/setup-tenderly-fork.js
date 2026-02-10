@@ -205,11 +205,9 @@ async function main() {
   const envPath = path.join(__dirname, '.env')
   let envContent = fs.readFileSync(envPath, 'utf8')
 
-  // Update addresses
+  // Update addresses (only the ones actually used)
   const updates = {
-    'PAYMASTER_ADDRESS': paymasterAddress,
     'PAYMASTER_V06_ADDRESS': paymasterAddress,
-    'PAYMASTER_V07_ADDRESS': paymasterAddress,
     'SWITCHER_ADDRESS': switcherAddress,
     'RPC_URL': rpcUrl,
   }

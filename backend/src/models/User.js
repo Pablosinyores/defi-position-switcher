@@ -4,7 +4,7 @@ const userSchema = new mongoose.Schema({
   privyId: {
     type: String,
     required: true,
-    unique: true  // unique: true already creates an index
+    unique: true
   },
   email: {
     type: String,
@@ -12,41 +12,43 @@ const userSchema = new mongoose.Schema({
     unique: true,
     lowercase: true
   },
-  // Privy's embedded EOA wallet (user controls via Privy)
+  // Privy's embedded EOA wallet - THIS IS THE OWNER of the smart account
   privyWalletAddress: {
     type: String,
     required: true,
     lowercase: true
   },
-  // ERC-4337 Smart Account contract address
+  // ERC-4337 Smart Account contract address (owned by privyWalletAddress)
   smartAccountAddress: {
     type: String,
-    required: true,
     unique: true,
+    sparse: true,  // Allow null until account is created
     lowercase: true
   },
-  // Owner's encrypted private key (controls the Smart Account)
-  // In production, this would ideally be managed by Privy, but for now we manage it
-  encryptedOwnerKey: {
-    type: String,
-    required: true
-  },
-  // Session key for backend to execute transactions
+  // Per-user session key for backend to execute transactions
+  // Backend generates this, user must sign to register it on their smart account
   sessionKey: {
     address: {
       type: String,
       lowercase: true
     },
+    // Encrypted private key - ONLY the backend can decrypt and use this
     encryptedPrivateKey: String,
     expiresAt: Date,
     permissions: [{
       type: String,
       enum: ['SWAP', 'SUPPLY', 'BORROW', 'REPAY', 'SWITCH_PROTOCOL']
     }],
+    // True only after user has signed the registration UserOp
     isGranted: {
       type: Boolean,
       default: false
-    }
+    },
+    // Temporary storage for pending registration UserOp (cleared after confirmation)
+    pendingUserOp: {
+      type: String  // JSON stringified UserOp data
+    },
+    pendingUserOpHash: String
   },
   createdAt: {
     type: Date,

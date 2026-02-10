@@ -11,10 +11,6 @@ const authRoutes = require('./routes/auth');
 const accountRoutes = require('./routes/account');
 const defiRoutes = require('./routes/defi');
 
-// Import Alchemy AA routes
-const alchemyAuthRoutes = require('./routes/alchemyAuth');
-const alchemyBorrowRoutes = require('./routes/alchemyBorrow');
-
 // Create Express app
 const app = express();
 
@@ -45,10 +41,6 @@ app.get('/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/account', accountRoutes);
 app.use('/api/defi', defiRoutes);
-
-// Alchemy AA routes
-app.use('/api/alchemy/auth', alchemyAuthRoutes);
-app.use('/api/alchemy/borrow', alchemyBorrowRoutes);
 
 // Error handling
 app.use(notFoundHandler);

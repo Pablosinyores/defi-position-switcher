@@ -21,7 +21,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
         },
         embeddedWallets: {
           createOnLogin: 'all-users', // Force create wallet for ALL users
-          noPromptOnSignature: true, // Don't prompt for signatures (gasless)
+          noPromptOnSignature: false, // Prompt for session key registration signature
           requireUserPasswordOnCreate: false // Don't require password for wallet creation
         }
       }}

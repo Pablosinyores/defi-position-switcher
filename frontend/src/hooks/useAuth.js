@@ -173,15 +173,69 @@ export function useAuth() {
     await syncWithBackend()
   }, [syncWithBackend])
 
-  // Activate smart account
+  // Get embedded Privy wallet for signing
+  const getEmbeddedWallet = useCallback(() => {
+    if (!wallets || wallets.length === 0) return null
+    return wallets.find(w => w.walletClientType === 'privy') || wallets[0]
+  }, [wallets])
+
+  /**
+   * Activate smart account by registering session key
+   * User must sign with their Privy wallet
+   */
   const activateAccount = useCallback(async () => {
     try {
       setLoading(true)
-      const response = await accountAPI.activate()
-      if (response.data.success) {
-        setSmartAccount(response.data.data)
-        return response.data.data
+
+      // Get embedded wallet for signing
+      const wallet = getEmbeddedWallet()
+      if (!wallet) {
+        throw new Error('No wallet available')
       }
+
+      // Get registration data from backend
+      const regResponse = await authAPI.getSessionKeyRegistrationData()
+      if (!regResponse.data.success) {
+        throw new Error(regResponse.data.error || 'Failed to get registration data')
+      }
+
+      const { userOpHash, alreadyRegistered } = regResponse.data.data
+
+      if (alreadyRegistered) {
+        const statusRes = await accountAPI.getStatus()
+        if (statusRes.data.success) {
+          setSmartAccount(statusRes.data.data)
+          setBackendUser(prev => ({ ...prev, hasSessionKey: true }))
+        }
+        return statusRes.data.data
+      }
+
+      // Sign with Privy wallet
+      const provider = await wallet.getEthereumProvider()
+      const signature = await provider.request({
+        method: 'personal_sign',
+        params: [userOpHash, wallet.address]
+      })
+
+      // Submit signature to backend
+      const confirmResponse = await authAPI.confirmSessionKeyRegistration(signature, userOpHash)
+      if (!confirmResponse.data.success) {
+        throw new Error('Failed to register session key')
+      }
+
+      // Update state
+      setBackendUser(prev => ({
+        ...prev,
+        hasSessionKey: true,
+        sessionKeyExpiry: confirmResponse.data.data.expiresAt
+      }))
+
+      const statusRes = await accountAPI.getStatus()
+      if (statusRes.data.success) {
+        setSmartAccount(statusRes.data.data)
+      }
+
+      return confirmResponse.data.data
     } catch (err) {
       console.error('Failed to activate account:', err)
       setError(err.message || 'Failed to activate account')
@@ -189,29 +243,7 @@ export function useAuth() {
     } finally {
       setLoading(false)
     }
-  }, [])
-
-  // Setup session key
-  const setupSessionKey = useCallback(async () => {
-    try {
-      setLoading(true)
-      const response = await authAPI.setupSessionKey()
-      if (response.data.success) {
-        setBackendUser((prev) => ({
-          ...prev,
-          hasSessionKey: true,
-          sessionKeyExpiry: response.data.data.expiresAt
-        }))
-        return response.data.data
-      }
-    } catch (err) {
-      console.error('Failed to setup session key:', err)
-      setError(err.message || 'Failed to setup session key')
-      throw err
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+  }, [getEmbeddedWallet])
 
   return {
     // Auth state
@@ -236,8 +268,7 @@ export function useAuth() {
     login,
     logout,
     refresh,
-    activateAccount,
-    setupSessionKey
+    activateAccount
   }
 }
 

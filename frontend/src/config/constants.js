@@ -13,7 +13,7 @@ export const MAINNET_FORK = {
 // Format: https://dashboard.tenderly.co/explorer/vnet/{fork-id}/tx/{txHash}
 export const TENDERLY_EXPLORER = {
   baseUrl: 'https://dashboard.tenderly.co/explorer/vnet',
-  forkId: import.meta.env.VITE_TENDERLY_FORK_ID || 'ee2e420a-0979-4e1e-ad46-dcdc7c46c2af',
+  forkId: import.meta.env.VITE_TENDERLY_FORK_ID || '13e9cd44-20a2-43b5-abac-d7d2001fc4af',
   getTxUrl: (txHash, forkId) => {
     const id = forkId || TENDERLY_EXPLORER.forkId
     return `${TENDERLY_EXPLORER.baseUrl}/${id}/tx/${txHash}`
@@ -25,8 +25,8 @@ export const CONTRACTS = {
   ENTRYPOINT_V06: '0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789',
   SESSION_KEY_PLUGIN: '0x0000003E0000a96de4058e1E02a62FaaeCf23d8d',
   MULTI_OWNER_PLUGIN: '0xcE0000007B008F50d762D155002600004cD6c647',
-  PAYMASTER: import.meta.env.VITE_PAYMASTER_ADDRESS || '0x2a75a9AfF7d909002fc458b765CB92F47350464B',
-  SWITCHER: import.meta.env.VITE_SWITCHER_ADDRESS || '0xda1AEA47D63D21475dEEd98f94a3beD82671B7F2'
+  PAYMASTER: import.meta.env.VITE_PAYMASTER_ADDRESS || '0x06049D835BAC69e7751CaD2C9Ab1aA88808fc1B3',
+  SWITCHER: import.meta.env.VITE_SWITCHER_ADDRESS || '0x81dcf22C4Ee4bD8EB3BDcb042fEb2Cc824379E0C'
 }
 
 // Compound V3 Comets (Mainnet)
@@ -58,7 +58,7 @@ export const TOKENS = {
     decimals: 6
   },
   WETH: {
-    address: '0xC02aaA39b223FE8d0A5E5C4F27eAD9083c756Cc2',
+    address: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
     symbol: 'WETH',
     decimals: 18
   }

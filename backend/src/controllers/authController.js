@@ -1,12 +1,16 @@
 const User = require('../models/User');
 const erc4337Service = require('../services/erc4337.service');
 const { ethers } = require('ethers');
+const { generatePrivateKey, privateKeyToAccount } = require('viem/accounts');
 const logger = require('../utils/logger');
 const { ValidationError } = require('../utils/errors');
 const { encrypt, decrypt } = require('../utils/encryption');
 
 /**
  * Register or login user with Privy
+ *
+ * IMPORTANT: The user's Privy EOA wallet is the OWNER of the smart account.
+ * Backend does NOT have owner access - only session key access after user grants it.
  */
 async function loginOrRegister(req, res, next) {
   try {
@@ -35,9 +39,9 @@ async function loginOrRegister(req, res, next) {
             email: user.email,
             eoaAddress: user.privyWalletAddress,
             privyWalletAddress: user.privyWalletAddress,
-            smartWalletAddress: user.smartAccountAddress,
             smartAccountAddress: user.smartAccountAddress,
             hasSessionKey: !!user.sessionKey?.address && user.sessionKey?.isGranted,
+            sessionKeyAddress: user.sessionKey?.address,
             sessionKeyExpiry: user.sessionKey?.expiresAt
           }
         }
@@ -49,30 +53,36 @@ async function loginOrRegister(req, res, next) {
       throw new ValidationError('Privy wallet address is required for new users');
     }
 
-    // Generate owner key for the Smart Account
-    // NOTE: In production, the user's Privy wallet should ideally be the owner
-    // But since we need to sign UserOps on the backend, we create a managed owner key
-    const ownerWallet = ethers.Wallet.createRandom();
-    const ownerPrivateKey = ownerWallet.privateKey;
+    // Compute Smart Account address with Privy EOA as owner (counterfactual)
+    // The user's Privy wallet IS the owner - backend has NO owner access
+    const { address: smartAccountAddress } = await erc4337Service.computeSmartAccountAddress(privyWalletAddress);
 
-    // Create Smart Account using ERC-6900 ModularAccount
-    const { address: smartAccountAddress } = await erc4337Service.createSmartAccount(ownerPrivateKey);
-    const eoa = privyWalletAddress;
+    // Generate a unique session key for this user
+    // This key will be registered on the smart account after user signs
+    const sessionKeyPrivate = generatePrivateKey();
+    const sessionKeyAccount = privateKeyToAccount(sessionKeyPrivate);
 
     user = new User({
       privyId: privyUserId,
       email,
-      privyWalletAddress: eoa,
+      privyWalletAddress,
       smartAccountAddress,
-      encryptedOwnerKey: encrypt(ownerPrivateKey)
+      sessionKey: {
+        address: sessionKeyAccount.address,
+        encryptedPrivateKey: encrypt(sessionKeyPrivate),
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+        permissions: ['SWAP', 'SUPPLY', 'BORROW', 'REPAY', 'SWITCH_PROTOCOL'],
+        isGranted: false  // Not granted until user signs registration
+      }
     });
 
     await user.save();
 
     logger.info(`User created:
       Email: ${email}
-      Privy EOA: ${eoa}
+      Privy EOA (OWNER): ${privyWalletAddress}
       Smart Account: ${smartAccountAddress}
+      Session Key: ${sessionKeyAccount.address} (pending user signature)
     `);
 
     res.status(201).json({
@@ -81,13 +91,14 @@ async function loginOrRegister(req, res, next) {
         user: {
           id: user._id,
           email: user.email,
-          eoaAddress: eoa,
-          privyWalletAddress: eoa,
-          smartWalletAddress: smartAccountAddress,
+          eoaAddress: privyWalletAddress,
+          privyWalletAddress,
           smartAccountAddress,
-          hasSessionKey: false
+          hasSessionKey: false,
+          // Return session key address so frontend can build registration UserOp
+          sessionKeyAddress: sessionKeyAccount.address
         },
-        message: 'User and Smart Account created successfully'
+        message: 'User created. Smart account owner is your Privy wallet. Please activate to deploy and grant session key.'
       }
     });
   } catch (error) {
@@ -96,64 +107,139 @@ async function loginOrRegister(req, res, next) {
 }
 
 /**
- * Setup session key for gasless transactions
- * Uses ERC-6900 Session Key Plugin
+ * Get the data needed for user to sign session key registration
+ * Returns the unsigned UserOp that the user must sign via Privy
  */
-async function setupSessionKey(req, res, next) {
+async function getSessionKeyRegistrationData(req, res, next) {
   try {
     const user = req.user;
 
-    // Check if session key already exists and is valid
-    const isRegistered = await erc4337Service.isSessionKeyRegistered(user.smartAccountAddress);
-    if (isRegistered && user.sessionKey?.expiresAt && new Date(user.sessionKey.expiresAt) > new Date()) {
-      return res.json({
-        success: true,
-        data: {
-          sessionKeyAddress: user.sessionKey.address,
-          expiresAt: user.sessionKey.expiresAt,
-          message: 'Session key already exists and is valid'
-        }
-      });
-    }
-
-    // Check if account is deployed
-    const isDeployed = await erc4337Service.isAccountDeployed(user.smartAccountAddress);
-    if (!isDeployed) {
+    if (!user.sessionKey?.address) {
       return res.status(400).json({
         success: false,
-        error: 'Smart account not deployed. Please activate your account first.'
+        error: 'No session key generated. Please login again.'
       });
     }
 
-    // Decrypt owner key to install session key plugin
-    const ownerPrivateKey = decrypt(user.encryptedOwnerKey);
+    // Check if session key already registered
+    if (user.sessionKey.isGranted) {
+      const isRegistered = await erc4337Service.isSessionKeyRegistered(
+        user.smartAccountAddress,
+        user.sessionKey.address
+      );
+      if (isRegistered) {
+        return res.json({
+          success: true,
+          data: {
+            alreadyRegistered: true,
+            sessionKeyAddress: user.sessionKey.address,
+            expiresAt: user.sessionKey.expiresAt,
+            message: 'Session key already registered'
+          }
+        });
+      }
+    }
 
-    // Install Session Key Plugin with DeFi permissions
-    const result = await erc4337Service.installSessionKeyPlugin(ownerPrivateKey, user.smartAccountAddress);
+    // Build the unsigned UserOp for session key registration
+    // User must sign this with their Privy wallet (the owner)
+    const registrationData = await erc4337Service.buildSessionKeyRegistrationUserOp(
+      user.smartAccountAddress,
+      user.privyWalletAddress,  // Owner is Privy wallet
+      user.sessionKey.address,
+      user.sessionKey.expiresAt
+    );
 
-    // Update user record
-    user.sessionKey = {
-      address: result.sessionKeyAddress,
-      expiresAt: result.expiresAt,
-      permissions: ['SWAP', 'SUPPLY', 'BORROW', 'REPAY', 'SWITCH_PROTOCOL'],
-      isGranted: result.installed
-    };
-
+    // Store the UserOp in the user record so we can retrieve it during confirmation
+    // This avoids timestamp mismatch when rebuilding
+    user.sessionKey.pendingUserOp = JSON.stringify(registrationData.userOp);
+    user.sessionKey.pendingUserOpHash = registrationData.userOpHash;
     await user.save();
 
-    logger.info(`Session key plugin installed for user: ${user.email}
-      Smart Account: ${user.smartAccountAddress}
-      Session Key: ${result.sessionKeyAddress}
-    `);
+    logger.info(`Session key registration data generated for ${user.email}`);
 
     res.json({
       success: true,
       data: {
-        sessionKeyAddress: result.sessionKeyAddress,
+        ...registrationData,
+        sessionKeyAddress: user.sessionKey.address,
+        message: 'Sign this UserOp with your Privy wallet to grant session key access'
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Confirm session key registration after user has signed
+ * Called by frontend after user signs the registration UserOp
+ */
+async function confirmSessionKeyRegistration(req, res, next) {
+  try {
+    const user = req.user;
+    const { signature, userOpHash } = req.body;
+
+    if (!signature) {
+      return res.status(400).json({
+        success: false,
+        error: 'Signature is required'
+      });
+    }
+
+    // Retrieve the stored UserOp (avoids timestamp mismatch from rebuilding)
+    if (!user.sessionKey?.pendingUserOp) {
+      return res.status(400).json({
+        success: false,
+        error: 'No pending registration found. Please request registration data first.'
+      });
+    }
+
+    const storedUserOp = JSON.parse(user.sessionKey.pendingUserOp);
+
+    // Verify the hash matches what we stored
+    if (userOpHash && userOpHash !== user.sessionKey.pendingUserOpHash) {
+      logger.warn(`UserOp hash mismatch for ${user.email}: expected ${user.sessionKey.pendingUserOpHash}, got ${userOpHash}`);
+    }
+
+    // Submit the stored UserOp with the user's signature
+    const result = await erc4337Service.submitSignedUserOp(storedUserOp, signature);
+
+    if (result.success) {
+      // Verify session key was actually registered
+      const isRegistered = await erc4337Service.isSessionKeyRegistered(
+        user.smartAccountAddress,
+        user.sessionKey.address
+      );
+
+      if (isRegistered) {
+        // Update user record - session key is now granted
+        user.sessionKey.isGranted = true;
+        // Clear the pending data
+        user.sessionKey.pendingUserOp = undefined;
+        user.sessionKey.pendingUserOpHash = undefined;
+        await user.save();
+
+        logger.info(`Session key registered for user: ${user.email}
+          Smart Account: ${user.smartAccountAddress}
+          Session Key: ${user.sessionKey.address}
+          Tx: ${result.txHash}
+        `);
+      } else {
+        result.success = false;
+        result.error = 'Session key registration transaction succeeded but key not found on-chain';
+      }
+    }
+
+    res.json({
+      success: result.success,
+      data: {
+        sessionKeyAddress: user.sessionKey.address,
         smartAccountAddress: user.smartAccountAddress,
-        expiresAt: result.expiresAt,
+        expiresAt: user.sessionKey.expiresAt,
         txHash: result.txHash,
-        message: 'Session key plugin installed. User can now perform gasless transactions.'
+        message: result.success
+          ? 'Session key registered. Backend can now execute gasless transactions.'
+          : result.error || 'Failed to register session key'
       }
     });
   } catch (error) {
@@ -223,7 +309,8 @@ async function getProfile(req, res, next) {
 
 module.exports = {
   loginOrRegister,
-  setupSessionKey,
+  getSessionKeyRegistrationData,
+  confirmSessionKeyRegistration,
   getSessionKeyStatus,
   getProfile
 };

@@ -11,18 +11,30 @@
 const { ethers } = require('ethers')
 const erc4337Service = require('../services/erc4337.service')
 const Transaction = require('../models/Transaction')
+const config = require('../config')
 const logger = require('../utils/logger')
+const { decrypt } = require('../utils/encryption')
 
-// Contract addresses
-const USDC_COMET = process.env.USDC_COMET_ADDRESS
-const WETH_COMET = process.env.WETH_COMET_ADDRESS
-const WBTC = process.env.WBTC_ADDRESS
-const USDC = process.env.USDC_ADDRESS
-const WETH = process.env.WETH_ADDRESS
-const SWAP_POOL = process.env.SWAP_POOL_ADDRESS // 1% USDC/WETH pool for price
+/**
+ * Helper to get decrypted session key from user
+ */
+function getSessionKey(user) {
+  if (!user.sessionKey?.isGranted || !user.sessionKey?.encryptedPrivateKey) {
+    return null
+  }
+  return decrypt(user.sessionKey.encryptedPrivateKey)
+}
+
+// Contract addresses (constant mainnet addresses)
+const USDC_COMET = '0xc3d688B66703497DAA19211EEdff47f25384cdc3'
+const WETH_COMET = '0xA17581A9E3356d9A858b789D68B4d866e593aE94'
+const WBTC = '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599'
+const USDC = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'
+const WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'
+const SWAP_POOL = '0x7BeA39867e4169DBe237d55C8242a8f2fcDcc387' // 1% USDC/WETH pool for price
 
 // Provider for price queries
-const provider = new ethers.JsonRpcProvider(process.env.RPC_URL)
+const provider = new ethers.JsonRpcProvider(config.blockchain.rpcUrl)
 
 // ABIs
 const ERC20_ABI = [
@@ -214,6 +226,15 @@ async function supply(req, res, next) {
       })
     }
 
+    // Get session key
+    const sessionKeyPrivate = getSessionKey(user)
+    if (!sessionKeyPrivate) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session key not granted. Please complete account activation first.'
+      })
+    }
+
     const cometAddress = comet === 'USDC' ? USDC_COMET : WETH_COMET
     const assetAddress = asset === 'WBTC' ? WBTC : asset === 'USDC' ? USDC : WETH
 
@@ -243,7 +264,7 @@ async function supply(req, res, next) {
 
     logger.info(`Supplying ${amount} ${asset} to ${comet} Comet for ${user.smartAccountAddress}`)
 
-    const result = await erc4337Service.executeWithSessionKey(user.smartAccountAddress, calls)
+    const result = await erc4337Service.executeWithSessionKey(user.smartAccountAddress, calls, sessionKeyPrivate)
 
     // Save transaction
     await Transaction.create({
@@ -287,6 +308,15 @@ async function borrow(req, res, next) {
       })
     }
 
+    // Get session key
+    const sessionKeyPrivate = getSessionKey(user)
+    if (!sessionKeyPrivate) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session key not granted. Please complete account activation first.'
+      })
+    }
+
     const cometAddress = comet === 'USDC' ? USDC_COMET : WETH_COMET
     const assetAddress = comet === 'USDC' ? USDC : WETH
 
@@ -305,7 +335,7 @@ async function borrow(req, res, next) {
 
     logger.info(`Borrowing ${amount} from ${comet} Comet for ${user.smartAccountAddress}`)
 
-    const result = await erc4337Service.executeWithSessionKey(user.smartAccountAddress, calls)
+    const result = await erc4337Service.executeWithSessionKey(user.smartAccountAddress, calls, sessionKeyPrivate)
 
     // Save transaction
     await Transaction.create({
@@ -349,6 +379,15 @@ async function repay(req, res, next) {
       })
     }
 
+    // Get session key
+    const sessionKeyPrivate = getSessionKey(user)
+    if (!sessionKeyPrivate) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session key not granted. Please complete account activation first.'
+      })
+    }
+
     const cometAddress = comet === 'USDC' ? USDC_COMET : WETH_COMET
     const assetAddress = comet === 'USDC' ? USDC : WETH
 
@@ -375,7 +414,7 @@ async function repay(req, res, next) {
 
     logger.info(`Repaying ${amount} to ${comet} Comet for ${user.smartAccountAddress}`)
 
-    const result = await erc4337Service.executeWithSessionKey(user.smartAccountAddress, calls)
+    const result = await erc4337Service.executeWithSessionKey(user.smartAccountAddress, calls, sessionKeyPrivate)
 
     // Save transaction
     await Transaction.create({
@@ -419,6 +458,15 @@ async function withdraw(req, res, next) {
       })
     }
 
+    // Get session key
+    const sessionKeyPrivate = getSessionKey(user)
+    if (!sessionKeyPrivate) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session key not granted. Please complete account activation first.'
+      })
+    }
+
     const cometAddress = comet === 'USDC' ? USDC_COMET : WETH_COMET
     const assetAddress = asset === 'WBTC' ? WBTC : asset === 'USDC' ? USDC : WETH
 
@@ -440,7 +488,7 @@ async function withdraw(req, res, next) {
 
     logger.info(`Withdrawing ${amount} ${asset} from ${comet} Comet for ${user.smartAccountAddress}`)
 
-    const result = await erc4337Service.executeWithSessionKey(user.smartAccountAddress, calls)
+    const result = await erc4337Service.executeWithSessionKey(user.smartAccountAddress, calls, sessionKeyPrivate)
 
     // Save transaction
     await Transaction.create({
@@ -481,6 +529,15 @@ async function switchPosition(req, res, next) {
       return res.status(400).json({
         success: false,
         error: 'No smart account address found'
+      })
+    }
+
+    // Get session key - required for gasless execution
+    const sessionKeyPrivate = getSessionKey(user)
+    if (!sessionKeyPrivate) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session key not granted. Please complete account activation first.'
       })
     }
 
@@ -530,7 +587,8 @@ async function switchPosition(req, res, next) {
       sourceCometAddress,
       targetCometAddress,
       collateralAmount.toString(),
-      borrowAmount.toString()
+      borrowAmount.toString(),
+      sessionKeyPrivate
     )
 
     // Save transaction

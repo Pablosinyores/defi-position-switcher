@@ -3,6 +3,7 @@ import { useAuth } from '../context/AuthContext'
 import { defiAPI, accountAPI } from '../services/api'
 import { toast } from 'react-toastify'
 import { formatAddress, formatAmount, COMETS, TENDERLY_EXPLORER } from '../config/constants'
+import { handleApiError } from '../utils/errorHandler'
 import './Dashboard.css'
 
 function Dashboard() {
@@ -20,7 +21,6 @@ function Dashboard() {
 
   const [positions, setPositions] = useState(null)
   const [balances, setBalances] = useState(null)
-  const [eoaBalances, setEoaBalances] = useState(null)
   const [transactions, setTransactions] = useState([])
   const [loading, setLoading] = useState(true)
   const [switching, setSwitching] = useState(false)
@@ -29,11 +29,9 @@ function Dashboard() {
   // DeFi action states
   const [actionLoading, setActionLoading] = useState(false)
   const [fundingLoading, setFundingLoading] = useState(false)
-  const [transferLoading, setTransferLoading] = useState(false)
   const [selectedComet, setSelectedComet] = useState('USDC')
   const [supplyAmount, setSupplyAmount] = useState('')
   const [borrowAmount, setBorrowAmount] = useState('')
-  const [transferAmount, setTransferAmount] = useState('')
 
   useEffect(() => {
     if (backendUser && smartAccountAddress) {
@@ -47,10 +45,9 @@ function Dashboard() {
     try {
       setLoading(true)
 
-      const [posRes, balRes, eoaBalRes, txRes] = await Promise.all([
+      const [posRes, balRes, txRes] = await Promise.all([
         defiAPI.getPosition().catch(() => ({ data: { success: false } })),
         accountAPI.getBalances().catch(() => ({ data: { success: false } })),
-        accountAPI.getEOABalances().catch(() => ({ data: { success: false } })),
         defiAPI.getTransactions(10).catch(() => ({ data: { success: false } }))
       ])
 
@@ -72,9 +69,6 @@ function Dashboard() {
       if (balRes.data.success) {
         setBalances(balRes.data.data)
       }
-      if (eoaBalRes.data.success) {
-        setEoaBalances(eoaBalRes.data.data)
-      }
       if (txRes.data.success) {
         setTransactions(txRes.data.data.transactions || [])
       }
@@ -85,74 +79,24 @@ function Dashboard() {
     }
   }
 
-  // Fund EOA with test tokens via Tenderly
-  const handleFundEOA = async () => {
+  // Fund Smart Account with test tokens via Tenderly
+  const handleFundSmartAccount = async () => {
     if (fundingLoading) return
 
     try {
       setFundingLoading(true)
-      toast.info('Funding your EOA with test tokens...')
+      toast.info('Funding your Smart Account with test tokens...')
 
-      const response = await accountAPI.fundEOA(['WBTC', 'USDC', 'WETH'])
+      const response = await accountAPI.fundSmartAccount(['WBTC', 'USDC', 'WETH'])
 
       if (response.data.success) {
-        toast.success('EOA funded with test tokens!')
-        setEoaBalances(response.data.data.balances)
+        toast.success('Smart Account funded with test tokens!')
+        setBalances(response.data.data.balances)
       }
     } catch (error) {
-      console.error('Fund failed:', error)
-      toast.error(error.response?.data?.error || 'Failed to fund EOA')
+      handleApiError(error, 'Failed to fund Smart Account')
     } finally {
       setFundingLoading(false)
-    }
-  }
-
-  // Approve smart account to spend EOA tokens
-  const [approving, setApproving] = useState(false)
-  const [isApproved, setIsApproved] = useState(false)
-
-  const handleApprove = async () => {
-    if (approving) return
-
-    try {
-      setApproving(true)
-      toast.info('Approving smart account to spend your tokens...')
-
-      const response = await accountAPI.approveSmartAccount(['WBTC', 'USDC'])
-
-      if (response.data.success) {
-        toast.success('Approval successful! You can now pull tokens to smart account.')
-        setIsApproved(true)
-      }
-    } catch (error) {
-      console.error('Approve failed:', error)
-      toast.error(error.response?.data?.error || 'Failed to approve')
-    } finally {
-      setApproving(false)
-    }
-  }
-
-  // Pull WBTC from EOA to Smart Account (gasless via session key!)
-  const handlePullFromEOA = async () => {
-    if (transferLoading || !transferAmount) return
-
-    try {
-      setTransferLoading(true)
-      toast.info(`Pulling ${transferAmount} WBTC to Smart Account (gasless)...`)
-
-      const response = await accountAPI.pullFromEOA('WBTC', transferAmount)
-
-      if (response.data.success) {
-        toast.success('Pull successful!')
-        setTransferAmount('')
-        setBalances(prev => ({ ...prev, ...response.data.data.smartAccountBalances }))
-        setEoaBalances(response.data.data.eoaBalances)
-      }
-    } catch (error) {
-      console.error('Pull failed:', error)
-      toast.error(error.response?.data?.error || 'Pull failed')
-    } finally {
-      setTransferLoading(false)
     }
   }
 
@@ -180,8 +124,7 @@ function Dashboard() {
         await loadData()
       }
     } catch (error) {
-      console.error('Supply failed:', error)
-      toast.error(error.response?.data?.error || 'Supply failed')
+      handleApiError(error, 'Supply failed')
     } finally {
       setActionLoading(false)
     }
@@ -203,8 +146,7 @@ function Dashboard() {
         await loadData()
       }
     } catch (error) {
-      console.error('Borrow failed:', error)
-      toast.error(error.response?.data?.error || 'Borrow failed')
+      handleApiError(error, 'Borrow failed')
     } finally {
       setActionLoading(false)
     }
@@ -224,8 +166,7 @@ function Dashboard() {
         await loadData()
       }
     } catch (error) {
-      console.error('Switch failed:', error)
-      toast.error(error.response?.data?.error || 'Failed to switch position')
+      handleApiError(error, 'Failed to switch position')
     } finally {
       setSwitching(false)
     }
@@ -242,7 +183,6 @@ function Dashboard() {
 
   const hasUsdcPosition = positions?.usdcComet?.collateral && BigInt(positions.usdcComet.collateral) > 0n
   const hasWethPosition = positions?.wethComet?.collateral && BigInt(positions.wethComet.collateral) > 0n
-  const hasAnyPosition = hasUsdcPosition || hasWethPosition
 
   return (
     <div className="dashboard">
@@ -330,77 +270,16 @@ function Dashboard() {
             {/* Balances Section */}
             <div className="balances-section">
               <div className="balances-header">
-                <h2>Token Balances</h2>
+                <h2>Smart Account Balances</h2>
                 <button
                   className="btn-fund"
-                  onClick={handleFundEOA}
+                  onClick={handleFundSmartAccount}
                   disabled={fundingLoading}
                 >
                   {fundingLoading ? 'Funding...' : 'Get Test Tokens'}
                 </button>
               </div>
 
-              {/* EOA Balances */}
-              <div className="balance-group">
-                <h3 className="balance-group-title">
-                  <span className="badge eoa">EOA</span>
-                  Privy Wallet
-                </h3>
-                <div className="balances-grid">
-                  <div className="balance-card">
-                    <span className="token-name">ETH</span>
-                    <span className="token-balance">{formatAmount(eoaBalances?.eth || '0', 18)}</span>
-                  </div>
-                  <div className="balance-card highlight">
-                    <span className="token-name">WBTC</span>
-                    <span className="token-balance">{formatAmount(eoaBalances?.wbtc || '0', 8)}</span>
-                  </div>
-                  <div className="balance-card">
-                    <span className="token-name">USDC</span>
-                    <span className="token-balance">{formatAmount(eoaBalances?.usdc || '0', 6)}</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Transfer Section - Approve + Pull Flow */}
-              <div className="transfer-section">
-                <div className="transfer-flow">
-                  {/* Step 1: Approve */}
-                  <div className="transfer-step">
-                    <span className="step-label">Step 1: Approve</span>
-                    <button
-                      className="btn-approve"
-                      onClick={handleApprove}
-                      disabled={approving || isApproved}
-                    >
-                      {approving ? 'Approving...' : isApproved ? 'Approved' : 'Approve Tokens'}
-                    </button>
-                  </div>
-
-                  {/* Step 2: Pull */}
-                  <div className="transfer-step">
-                    <span className="step-label">Step 2: Pull (Gasless)</span>
-                    <div className="transfer-input">
-                      <input
-                        type="number"
-                        placeholder="Amount WBTC"
-                        value={transferAmount}
-                        onChange={(e) => setTransferAmount(e.target.value)}
-                        disabled={transferLoading}
-                      />
-                      <button
-                        className="btn-transfer"
-                        onClick={handlePullFromEOA}
-                        disabled={transferLoading || !transferAmount}
-                      >
-                        {transferLoading ? 'Pulling...' : 'Pull to Smart Account'}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Smart Account Balances */}
               <div className="balance-group">
                 <h3 className="balance-group-title">
                   <span className="badge smart">4337</span>
@@ -418,6 +297,10 @@ function Dashboard() {
                   <div className="balance-card">
                     <span className="token-name">USDC</span>
                     <span className="token-balance">{formatAmount(balances?.usdc || '0', 6)}</span>
+                  </div>
+                  <div className="balance-card">
+                    <span className="token-name">WETH</span>
+                    <span className="token-balance">{formatAmount(balances?.weth || '0', 18)}</span>
                   </div>
                 </div>
               </div>
@@ -479,7 +362,7 @@ function Dashboard() {
               )}
             </div>
 
-            {/* Transaction History - Always visible as 4th section */}
+            {/* Transaction History */}
             <TransactionHistoryView
               transactions={transactions}
               onRefresh={loadData}

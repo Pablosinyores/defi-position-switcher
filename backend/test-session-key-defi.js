@@ -19,29 +19,38 @@ const { http, keccak256, toHex, encodeAbiParameters, encodePacked } = require('v
 const { privateKeyToAccount, generatePrivateKey } = require('viem/accounts')
 const { mainnet } = require('viem/chains')
 
+// Required env vars (deployment-specific)
+const RPC_URL = process.env.RPC_URL
+const PAYMASTER_V06 = process.env.PAYMASTER_V06_ADDRESS
+const SWITCHER = process.env.SWITCHER_ADDRESS
+
+if (!RPC_URL || !PAYMASTER_V06 || !SWITCHER) {
+  console.error('Missing required env vars: RPC_URL, PAYMASTER_V06_ADDRESS, SWITCHER_ADDRESS')
+  console.error('Run: npm run setup-fork first to deploy contracts')
+  process.exit(1)
+}
+
 // Mainnet fork config
 const mainnetFork = {
   ...mainnet,
   id: 1,
   name: 'Mainnet Fork',
   rpcUrls: {
-    default: { http: [process.env.RPC_URL] },
-    public: { http: [process.env.RPC_URL] }
+    default: { http: [RPC_URL] },
+    public: { http: [RPC_URL] }
   }
 }
 
-// Addresses
+// ERC-4337 Infrastructure (constant mainnet addresses)
 const ENTRYPOINT_V06 = '0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789'
-const PAYMASTER_V06 = process.env.PAYMASTER_V06_ADDRESS
 const SESSION_KEY_PLUGIN = '0x0000003E0000a96de4058e1E02a62FaaeCf23d8d'
 const MULTI_OWNER_PLUGIN = '0xcE0000007B008F50d762D155002600004cD6c647'
 
-// DeFi Addresses
-const SWITCHER = process.env.SWITCHER_ADDRESS
-const USDC_COMET = process.env.USDC_COMET_ADDRESS
-const WETH_COMET = process.env.WETH_COMET_ADDRESS
-const WBTC = process.env.WBTC_ADDRESS
-const USDC = process.env.USDC_ADDRESS
+// DeFi Addresses (constant mainnet addresses)
+const USDC_COMET = '0xc3d688B66703497DAA19211EEdff47f25384cdc3'
+const WETH_COMET = '0xA17581A9E3356d9A858b789D68B4d866e593aE94'
+const WBTC = '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599'
+const USDC = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'
 
 // ABIs
 const ENTRYPOINT_V06_ABI = [
@@ -100,7 +109,7 @@ async function testSessionKeyDeFi() {
   console.log('║  ERC-4337 Session Key + DeFi Switcher E2E Test            ║')
   console.log('╚════════════════════════════════════════════════════════════╝\n')
 
-  const provider = new ethers.JsonRpcProvider(process.env.RPC_URL)
+  const provider = new ethers.JsonRpcProvider(RPC_URL)
 
   // Create a fresh executor to avoid nonce issues
   const executorWallet = ethers.Wallet.createRandom().connect(provider)
@@ -123,19 +132,22 @@ async function testSessionKeyDeFi() {
   console.log('  Switcher:', SWITCHER)
   console.log('')
 
-  // Step 1: Create signers
+  // Step 1: Create signers (generated fresh for each test run)
   console.log('Step 1: Creating signers...')
   const ownerKey = generatePrivateKey()
   const owner = privateKeyToAccount(ownerKey)
   const ownerSigner = new LocalAccountSigner(owner)
-  const sessionKey = privateKeyToAccount(process.env.SESSION_KEY_PRIVATE_KEY)
+
+  // Generate session key in test (no env var needed)
+  const sessionKeyPrivate = generatePrivateKey()
+  const sessionKey = privateKeyToAccount(sessionKeyPrivate)
   console.log('  Owner:', owner.address)
-  console.log('  Session Key:', sessionKey.address)
+  console.log('  Session Key:', sessionKey.address, '(generated for test)')
 
   // Step 2: Create the account
   console.log('\nStep 2: Creating ModularAccount...')
   const account = await createMultiOwnerModularAccount({
-    transport: http(process.env.RPC_URL),
+    transport: http(RPC_URL),
     chain: mainnetFork,
     signer: ownerSigner,
     owners: [owner.address],
@@ -325,39 +337,19 @@ async function testSessionKeyDeFi() {
   const switcherOwner = await switcherContract.owner()
   console.log('  Switcher owner:', switcherOwner)
 
-  // Check if DEPLOYER_PRIVATE_KEY is the switcher owner
-  const deployerKey = process.env.DEPLOYER_PRIVATE_KEY
-  if (deployerKey) {
-    const deployerWallet = new ethers.Wallet(deployerKey, provider)
-    if (deployerWallet.address.toLowerCase() === switcherOwner.toLowerCase()) {
-      console.log('  Using deployer key as switcher owner')
-      await (await new ethers.Contract(SWITCHER, SWITCHER_OWNER_ABI, deployerWallet).authorizeCaller(accountAddress, true)).wait()
-    } else {
-      // Try impersonation
-      if (useTenderly) {
-        // Tenderly: Use storage override to set authorized callers directly
-        // authorizedCallers is at slot 0 (mapping) - keccak256(abi.encode(address, uint256(0)))
-        const slot = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['address', 'uint256'], [accountAddress, 0]))
-        await provider.send('tenderly_setStorageAt', [SWITCHER, slot, '0x0000000000000000000000000000000000000000000000000000000000000001'])
-        console.log('  Set authorized via Tenderly storage override')
-      } else {
-        await provider.send('anvil_impersonateAccount', [switcherOwner])
-        await provider.send('anvil_setBalance', [switcherOwner, '0x56BC75E2D63100000'])
-        const switcherOwnerSigner = await provider.getSigner(switcherOwner)
-        await (await new ethers.Contract(SWITCHER, SWITCHER_OWNER_ABI, switcherOwnerSigner).authorizeCaller(accountAddress, true)).wait()
-      }
-    }
+  // Authorize using fork impersonation (no deployer key needed)
+  if (useTenderly) {
+    // Tenderly: Use storage override to set authorized callers directly
+    // authorizedCallers is at slot 0 (mapping) - keccak256(abi.encode(address, uint256(0)))
+    const slot = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['address', 'uint256'], [accountAddress, 0]))
+    await provider.send('tenderly_setStorageAt', [SWITCHER, slot, '0x0000000000000000000000000000000000000000000000000000000000000001'])
+    console.log('  Set authorized via Tenderly storage override')
   } else {
-    // Fallback to impersonation
-    if (useTenderly) {
-      const slot = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['address', 'uint256'], [accountAddress, 0]))
-      await provider.send('tenderly_setStorageAt', [SWITCHER, slot, '0x0000000000000000000000000000000000000000000000000000000000000001'])
-    } else {
-      await provider.send('anvil_impersonateAccount', [switcherOwner])
-      await provider.send('anvil_setBalance', [switcherOwner, '0x56BC75E2D63100000'])
-      const switcherOwnerSigner = await provider.getSigner(switcherOwner)
-      await (await new ethers.Contract(SWITCHER, SWITCHER_OWNER_ABI, switcherOwnerSigner).authorizeCaller(accountAddress, true)).wait()
-    }
+    // Anvil: Impersonate switcher owner
+    await provider.send('anvil_impersonateAccount', [switcherOwner])
+    await provider.send('anvil_setBalance', [switcherOwner, '0x56BC75E2D63100000'])
+    const switcherOwnerSigner = await provider.getSigner(switcherOwner)
+    await (await new ethers.Contract(SWITCHER, SWITCHER_OWNER_ABI, switcherOwnerSigner).authorizeCaller(accountAddress, true)).wait()
   }
   console.log('  Account authorized on switcher')
 
